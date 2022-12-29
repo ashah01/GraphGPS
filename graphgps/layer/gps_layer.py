@@ -39,48 +39,6 @@ class GPSLayer(nn.Module):
                 "Transformer global attention model."
             )
 
-        # Local message-passing model.
-        if local_gnn_type == 'None':
-            self.local_model = None
-        elif local_gnn_type == 'GENConv':
-            self.local_model = pygnn.GENConv(dim_h, dim_h)
-        elif local_gnn_type == 'GINE':
-            gin_nn = nn.Sequential(Linear_pyg(dim_h, dim_h),
-                                   self.activation,
-                                   Linear_pyg(dim_h, dim_h))
-            if self.equivstable_pe:  # Use specialised GINE layer for EquivStableLapPE.
-                self.local_model = GINEConvESLapPE(gin_nn)
-            else:
-                self.local_model = pygnn.GINEConv(gin_nn)
-        elif local_gnn_type == 'GAT':
-            self.local_model = pygnn.GATConv(in_channels=dim_h,
-                                             out_channels=dim_h // num_heads,
-                                             heads=num_heads,
-                                             edge_dim=dim_h)
-        elif local_gnn_type == 'PNA':
-            # Defaults from the paper.
-            # aggregators = ['mean', 'min', 'max', 'std']
-            # scalers = ['identity', 'amplification', 'attenuation']
-            aggregators = ['mean', 'max', 'sum']
-            scalers = ['identity']
-            deg = torch.from_numpy(np.array(pna_degrees))
-            self.local_model = pygnn.PNAConv(dim_h, dim_h,
-                                             aggregators=aggregators,
-                                             scalers=scalers,
-                                             deg=deg,
-                                             edge_dim=min(128, dim_h),
-                                             towers=1,
-                                             pre_layers=1,
-                                             post_layers=1,
-                                             divide_input=False)
-        elif local_gnn_type == 'CustomGatedGCN':
-            self.local_model = GatedGCNLayer(dim_h, dim_h,
-                                             dropout=dropout,
-                                             residual=True,
-                                             act=act,
-                                             equivstable_pe=equivstable_pe)
-        else:
-            raise ValueError(f"Unsupported local GNN model: {local_gnn_type}")
         self.local_gnn_type = local_gnn_type
 
         # Global attention transformer-style model.
@@ -140,60 +98,27 @@ class GPSLayer(nn.Module):
         h = batch.x
         h_in1 = h  # for first residual connection
 
-        h_out_list = []
-        # Local MPNN with edge attributes.
-        if self.local_model is not None:
-            self.local_model: pygnn.conv.MessagePassing  # Typing hint.
-            if self.local_gnn_type == 'CustomGatedGCN':
-                es_data = None
-                if self.equivstable_pe:
-                    es_data = batch.pe_EquivStableLapPE
-                local_out = self.local_model(Batch(batch=batch,
-                                                   x=h,
-                                                   edge_index=batch.edge_index,
-                                                   edge_attr=batch.edge_attr,
-                                                   pe_EquivStableLapPE=es_data))
-                # GatedGCN does residual connection and dropout internally.
-                h_local = local_out.x
-                batch.edge_attr = local_out.edge_attr
-            else:
-                if self.equivstable_pe:
-                    h_local = self.local_model(h, batch.edge_index, batch.edge_attr,
-                                               batch.pe_EquivStableLapPE)
-                else:
-                    h_local = self.local_model(h, batch.edge_index, batch.edge_attr)
-                h_local = self.dropout_local(h_local)
-                h_local = h_in1 + h_local  # Residual connection.
-
-            if self.layer_norm:
-                h_local = self.norm1_local(h_local, batch.batch)
-            if self.batch_norm:
-                h_local = self.norm1_local(h_local)
-            h_out_list.append(h_local)
-
         # Multi-head attention.
-        if self.self_attn is not None:
-            h_dense, mask = to_dense_batch(h, batch.batch)
-            if self.global_model_type == 'Transformer':
-                h_attn = self._sa_block(h_dense, None, ~mask)[mask]
-            elif self.global_model_type == 'Performer':
-                h_attn = self.self_attn(h_dense, mask=mask)[mask]
-            elif self.global_model_type == 'BigBird':
-                h_attn = self.self_attn(h_dense, attention_mask=mask)
-            else:
-                raise RuntimeError(f"Unexpected {self.global_model_type}")
+        h_dense, mask = to_dense_batch(h, batch.batch)
+        if self.global_model_type == 'Transformer':
+            h_attn = self._sa_block(h_dense, None, ~mask)[mask]
+        elif self.global_model_type == 'Performer':
+            h_attn = self.self_attn(h_dense, mask=mask)[mask]
+        elif self.global_model_type == 'BigBird':
+            h_attn = self.self_attn(h_dense, attention_mask=mask)
+        else:
+            raise RuntimeError(f"Unexpected {self.global_model_type}")
 
-            h_attn = self.dropout_attn(h_attn)
-            h_attn = h_in1 + h_attn  # Residual connection.
-            if self.layer_norm:
-                h_attn = self.norm1_attn(h_attn, batch.batch)
-            if self.batch_norm:
-                h_attn = self.norm1_attn(h_attn)
-            h_out_list.append(h_attn)
+        h_attn = self.dropout_attn(h_attn)
+        h_attn = h_in1 + h_attn  # Residual connection.
+        if self.layer_norm:
+            h_attn = self.norm1_attn(h_attn, batch.batch)
+        if self.batch_norm:
+            h_attn = self.norm1_attn(h_attn)
 
         # Combine local and global outputs.
         # h = torch.cat(h_out_list, dim=-1)
-        h = sum(h_out_list)
+        h = h_attn
 
         # Feed Forward block.
         h = h + self._ff_block(h)
