@@ -3,6 +3,10 @@ import os.path as osp
 import time
 from functools import partial
 
+import torch_geometric
+from torch_scatter import scatter_sum
+import torch.nn.functional as F
+
 import numpy as np
 import torch
 import torch_geometric.transforms as T
@@ -540,10 +544,53 @@ def preformat_ZINC(dataset_dir, name):
     if name not in ['subset', 'full']:
         raise ValueError(f"Unexpected subset choice for ZINC dataset: {name}")
     dataset = join_dataset_splits(
-        [ZINC(root=dataset_dir, subset=(name == 'subset'), split=split)
+        [ZINC(root=dataset_dir, subset=(name == 'subset'), split=split, transform=feat_transform, pre_transform=preproc)
          for split in ['train', 'val', 'test']]
     )
     return dataset
+
+def feat_transform(graph):
+    graph.x = torch._cast_Float(F.one_hot(graph.x.view(-1), 21))
+    graph.edge_attr = torch._cast_Float(F.one_hot(graph.edge_attr.view(-1), 4))
+    return graph
+
+def preproc(data):
+    """ Preprocess Pytorch Geometric data objects to be used with our walk generator """
+
+    if not data.is_coalesced():
+        data.coalesce()
+
+    if data.num_node_features == 0:
+        data.x = torch.zeros((data.num_nodes, 1), dtype=torch.float32)
+
+    if data.num_edge_features == 0:
+        data.edge_attr = torch.zeros((data.num_edges, 1), dtype=torch.float32)
+
+    edge_idx = data.edge_index
+    edge_feat = data.edge_attr
+    node_feat = data.x
+
+    order = node_feat.shape[0]
+
+    # create bitwise encoding of adjacency matrix using 64-bit integers
+    data.node_id = torch.arange(0, order)
+    bit_id = torch.zeros((order, order // 63 + 1), dtype=torch.int64)
+    bit_id[data.node_id, data.node_id // 63] = torch.tensor(1) << data.node_id % 63
+    data.adj_bits = scatter_sum(bit_id[edge_idx[0]], edge_idx[1], dim=0, dim_size=data.num_nodes)
+
+    # compute node offsets in the adjacency list
+    data.degrees = torch_geometric.utils.degree(edge_idx[0], dtype=torch.int64, num_nodes=data.num_nodes)
+    adj_offset = torch.zeros((order,), dtype=torch.int64)
+    adj_offset[1:] = torch.cumsum(data.degrees, dim=0)[:-1]
+    data.adj_offset = adj_offset
+
+    if not torch.is_tensor(data.y):
+        data.y = torch.tensor(data.y)
+    data.y = data.y.view(1, -1)
+
+    return data
+
+
 
 
 def preformat_AQSOL(dataset_dir):

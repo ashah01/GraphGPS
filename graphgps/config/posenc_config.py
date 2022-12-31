@@ -82,6 +82,8 @@ def set_cfg_posenc(cfg):
         # Python snippet to generate `posenc.kernel.times`, e.g. 'range(1, 17)'
         # If set, it will be executed via `eval()` and override posenc.kernel.times
         pecfg.kernel.times_func = ''
+    
+    cfg.posenc_RWSE.win_size = 8
 
     # Override default, electrostatic kernel has fixed set of 10 measures.
     cfg.posenc_ElstaticSE.kernel.times_func = 'range(10)'

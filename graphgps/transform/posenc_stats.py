@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import numpy as np
 import torch
+import torch_geometric
 import torch.nn.functional as F
 from numpy.linalg import eigvals
 from torch_geometric.utils import (get_laplacian, to_scipy_sparse_matrix,
@@ -9,6 +10,7 @@ from torch_geometric.utils import (get_laplacian, to_scipy_sparse_matrix,
 from torch_geometric.utils.num_nodes import maybe_num_nodes
 from torch_scatter import scatter_add
 
+MAXINT = np.iinfo(np.int64).max
 
 def compute_posenc_stats(data, pe_types, is_undirected, cfg):
     """Precompute positional encodings for the given graph.
@@ -87,13 +89,15 @@ def compute_posenc_stats(data, pe_types, is_undirected, cfg):
 
     # Random Walks.
     if 'RWSE' in pe_types:
+        import IPython; IPython.embed()
         kernel_param = cfg.posenc_RWSE.kernel
+        win_size = cfg.posenc_RWSE.win_size
         if len(kernel_param.times) == 0:
             raise ValueError("List of kernel times required for RWSE")
-        rw_landing = get_rw_landing_probs(ksteps=kernel_param.times,
-                                          edge_index=data.edge_index,
-                                          num_nodes=N)
-        data.pestat_RWSE = rw_landing
+        
+        data = get_rw_landing_probs(ksteps=kernel_param.times,
+                                          graph=data,
+                                          num_nodes=N, win_size=win_size)
 
     # Heat Kernels.
     if 'HKdiagSE' in pe_types or 'HKfullPE' in pe_types:
@@ -173,8 +177,8 @@ def get_lap_decomp_stats(evals, evects, max_freqs, eigvec_norm='L2'):
     return EigVals, EigVecs
 
 
-def get_rw_landing_probs(ksteps, edge_index, edge_weight=None,
-                         num_nodes=None, space_dim=0):
+def get_rw_landing_probs(ksteps, graph, edge_weight=None,
+                         num_nodes=None, space_dim=0, win_size=8):
     """Compute Random Walk landing probabilities for given list of K steps.
 
     Args:
@@ -191,35 +195,103 @@ def get_rw_landing_probs(ksteps, edge_index, edge_weight=None,
     Returns:
         2D Tensor with shape (num_nodes, len(ksteps)) with RW landing probs
     """
-    if edge_weight is None:
-        edge_weight = torch.ones(edge_index.size(1), device=edge_index.device)
-    num_nodes = maybe_num_nodes(edge_index, num_nodes)
-    source, dest = edge_index[0], edge_index[1]
-    deg = scatter_add(edge_weight, source, dim=0, dim_size=num_nodes)  # Out degrees.
-    deg_inv = deg.pow(-1.)
-    deg_inv.masked_fill_(deg_inv == float('inf'), 0)
 
-    if edge_index.numel() == 0:
-        P = edge_index.new_zeros((1, num_nodes, num_nodes))
-    else:
-        # P = D^-1 * A
-        P = torch.diag(deg_inv) @ to_dense_adj(edge_index, max_num_nodes=num_nodes)  # 1 x (Num nodes) x (Num nodes)
-    rws = []
-    if ksteps == list(range(min(ksteps), max(ksteps) + 1)):
-        # Efficient way if ksteps are a consecutive sequence (most of the time the case)
-        Pk = P.clone().detach().matrix_power(min(ksteps))
-        for k in range(min(ksteps), max(ksteps) + 1):
-            rws.append(torch.diagonal(Pk, dim1=-2, dim2=-1) * \
-                       (k ** (space_dim / 2)))
-            Pk = Pk @ P
-    else:
-        # Explicitly raising P to power k for each k \in ksteps.
-        for k in ksteps:
-            rws.append(torch.diagonal(P.matrix_power(k), dim1=-2, dim2=-1) * \
-                       (k ** (space_dim / 2)))
-    rw_landing = torch.cat(rws, dim=0).transpose(0, 1)  # (Num nodes) x (K steps)
+    device = graph.x.device
 
-    return rw_landing
+    # get adjacency data
+    adj_nodes = graph.edge_index[1]
+    adj_offset = graph.adj_offset
+    degrees = graph.degrees
+    node_id = graph.node_id
+    adj_bits = graph.adj_bits
+
+    steps = len(ksteps)
+
+    # set dimensions
+    s = win_size
+    n = degrees.shape[0]
+    l = steps + 1
+
+    start = torch.arange(0, n, dtype=torch.int64).view(-1)
+    start = start[degrees[start] > 0]
+
+    # init tensor to hold walk indices
+    w = start.shape[0]
+    walks = torch.zeros((l, w), dtype=torch.int64, device=device)
+    walks[0] = start
+
+    walk_edges = torch.zeros((l-1, w), dtype=torch.int64, device=device)
+
+    # get all random decisions at once (faster then individual calls)
+    choices = torch.randint(0, MAXINT, (steps, w), device=device)
+
+    id_enc = torch.zeros((l, s, w), dtype=torch.bool, device=device)
+
+    edges = torch.zeros((l, s, w), dtype=torch.bool, device=device)
+
+    # remove one choice of each node with deg > 1 for no_backtrack walks
+    nb_degree_mask = (degrees == 1)
+    nb_degrees = nb_degree_mask * degrees + (~nb_degree_mask) * (degrees - 1)
+
+    for i in range(steps):
+        chosen_edges = unweighted_choice(i, walks, adj_nodes, adj_offset, degrees, nb_degrees, choices)
+
+        # update nodes
+        walks[i+1] = adj_nodes[chosen_edges]
+
+        # update edge features
+        walk_edges[i] = chosen_edges
+
+        o = min(s, i+1)
+        prev = walks[i+1-o:i+1]
+
+        # get local identity relation
+        id_enc[i+1, s-o:] = torch.eq(walks[i+1].view(1, w), prev)
+
+
+        # look up edges in the bit-wise adjacency encoding
+        cur_id = node_id[walks[i+1]]
+        cur_int = (cur_id // 63).view(1, -1, 1).repeat(o, 1, 1)
+        edges[i + 1, s - o:] = (torch.gather(adj_bits[prev], 2, cur_int).view(o,-1) >> (cur_id % 63).view(1,-1)) % 2 == 1
+
+    # permute walks into the correct shapes
+    graph.walk_nodes = walks.permute(1, 0)
+    graph.walk_edges = walk_edges.permute(1, 0)
+
+    # combine id, adj and edge features
+    feat = []
+    feat.append(torch._cast_Float(id_enc.permute(2, 1, 0)))
+    feat.append(torch._cast_Float(edges.permute(2, 1, 0))[:, :-1, :])
+    graph.walk_x = torch.cat(feat, dim=1) if len(feat) > 0 else None
+    return graph
+
+
+def unweighted_choice(i, walks, adj_nodes, adj_offset, degrees, nb_degrees, choices):
+    """
+    :param i: Index of the current step
+    :param walks: Tensor of vertices in the walk
+    :param adj_nodes: Adjacency List
+    :param adj_offset: Node offset in the adjacency list
+    :param choices: Cache of random integers
+    :param degrees: Degree of each node
+    :param nb_degrees: Reduced degrees for no-backtrack walks
+    :return: A list of a chosen outgoing edge for each walk
+    """
+    # do uniform step
+    cur_nodes = walks[i]
+    edge_idx = choices[i] % degrees[cur_nodes]
+    chosen_edges = adj_offset[cur_nodes] + edge_idx
+
+    if i > 0:
+        old_nodes = walks[i - 1]
+        new_nodes = adj_nodes[chosen_edges]
+        # correct backtracking
+        bt = new_nodes == old_nodes
+        if bt.max():
+            bt_nodes = walks[i][bt]
+            chosen_edges[bt] = adj_offset[bt_nodes] + (edge_idx[bt] + 1 + (choices[i][bt] % nb_degrees[bt_nodes])) % degrees[bt_nodes]
+
+    return chosen_edges
 
 
 def get_heat_kernels_diag(evects, evals, kernel_times=[], space_dim=0):

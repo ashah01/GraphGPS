@@ -46,7 +46,6 @@ class FeatureEncoder(torch.nn.Module):
         #                              has_bias=False, cfg=cfg))
 
     def forward(self, batch):
-        import IPython; IPython.embed()
         for module in self.children():
             batch = module(batch)
         return batch

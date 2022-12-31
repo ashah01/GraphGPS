@@ -21,10 +21,11 @@ dataset:
 posenc_RWSE:
   enable: True
   kernel:
-    times_func: range(1,21)
+    times_func: range(20)
   model: Linear
   dim_pe: 28
   raw_norm_type: BatchNorm
+  win_size: 8
 train:
   mode: custom
   batch_size: 32
