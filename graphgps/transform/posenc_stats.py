@@ -89,7 +89,6 @@ def compute_posenc_stats(data, pe_types, is_undirected, cfg):
 
     # Random Walks.
     if 'RWSE' in pe_types:
-        import IPython; IPython.embed()
         kernel_param = cfg.posenc_RWSE.kernel
         win_size = cfg.posenc_RWSE.win_size
         if len(kernel_param.times) == 0:
