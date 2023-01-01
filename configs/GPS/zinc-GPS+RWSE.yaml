@@ -11,11 +11,10 @@ dataset:
   task_type: regression
   transductive: False
   node_encoder: True
-  node_encoder_name: TypeDictNode+RWSE
+  node_encoder_name: CRaWl
   node_encoder_num_types: 28
   node_encoder_bn: False
-  edge_encoder: True
-  edge_encoder_name: TypeDictEdge
+  edge_encoder: False
   edge_encoder_num_types: 4
   edge_encoder_bn: False
 posenc_RWSE:
@@ -55,6 +54,8 @@ gnn:
   dropout: 0.0
   agg: mean
   normalize_adj: False
+  kernel_size: 9
+  vn: 1
 optim:
   clip_grad_norm: True
   optimizer: adamW
