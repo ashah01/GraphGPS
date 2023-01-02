@@ -550,8 +550,8 @@ def preformat_ZINC(dataset_dir, name):
     return dataset
 
 def feat_transform(graph):
-    graph.x = torch._cast_Float(F.one_hot(graph.x.view(-1), 21))
-    graph.edge_attr = torch._cast_Float(F.one_hot(graph.edge_attr.view(-1), 4))
+    graph.x = torch._cast_Float(F.one_hot(graph.x.view(-1), cfg.dataset.node_encoder_num_types))
+    graph.edge_attr = torch._cast_Float(F.one_hot(graph.edge_attr.view(-1), cfg.dataset.edge_encoder_num_types))
     return graph
 
 def preproc(data):
@@ -586,7 +586,6 @@ def preproc(data):
 
     if not torch.is_tensor(data.y):
         data.y = torch.tensor(data.y)
-    data.y = data.y.view(1, -1)
 
     return data
 

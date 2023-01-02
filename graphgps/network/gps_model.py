@@ -19,17 +19,11 @@ class FeatureEncoder(torch.nn.Module):
     def __init__(self, dim_in):
         super(FeatureEncoder, self).__init__()
         self.dim_in = dim_in
-        # if cfg.dataset.node_encoder:
-        #     # Encode integer node features via nn.Embeddings
-        #     NodeEncoder = register.node_encoder_dict[
-        #         cfg.dataset.node_encoder_name]
-        #     self.node_encoder = NodeEncoder(cfg.gnn.dim_inner)
-        #     if cfg.dataset.node_encoder_bn:
-        #         self.node_encoder_bn = BatchNorm1dNode(
-        #             new_layer_config(cfg.gnn.dim_inner, -1, -1, has_act=False,
-        #                              has_bias=False, cfg=cfg))
-        #     # Update dim_in to reflect the new dimension fo the node features
-        #     self.dim_in = cfg.gnn.dim_inner
+        # Encode integer node features via nn.Embeddings
+        NodeEncoder = register.node_encoder_dict[
+            cfg.dataset.node_encoder_name]
+        self.node_encoder = NodeEncoder(cfg.dataset.node_encoder_num_types, cfg.dataset.edge_encoder_num_types)
+        self.dim_in = cfg.gnn.dim_inner
 
     def forward(self, batch):
         for module in self.children():

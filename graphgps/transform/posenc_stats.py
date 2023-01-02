@@ -250,7 +250,7 @@ def get_rw_landing_probs(ksteps, graph, edge_weight=None,
 
         # look up edges in the bit-wise adjacency encoding
         cur_id = node_id[walks[i+1]]
-        cur_int = (cur_id // 63).view(1, -1, 1).repeat(o, 1, 1)
+        cur_int = torch.div(cur_id, 63, rounding_mode='trunc').view(1, -1, 1).repeat(o, 1, 1)
         edges[i + 1, s - o:] = (torch.gather(adj_bits[prev], 2, cur_int).view(o,-1) >> (cur_id % 63).view(1,-1)) % 2 == 1
 
     # permute walks into the correct shapes

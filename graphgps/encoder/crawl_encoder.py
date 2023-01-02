@@ -115,7 +115,7 @@ class CRaWl(Module):
         super(CRaWl, self).__init__()
         self.walk_dim = cfg.posenc_RWSE.win_size + cfg.posenc_RWSE.win_size - 1
         self.layers = cfg.gt.layers // 3
-        self.hidden = cfg.gt.dim_inner
+        self.hidden = cfg.gt.dim_hidden
         self.kernel_size = cfg.gnn.kernel_size
         self.dropout = cfg.gnn.dropout
 
@@ -153,6 +153,7 @@ class CRaWl(Module):
         # Transformer
         h_local = self.dropout_layer(h_local)
         h_local = self.batch_local(h_local)
-    
 
-        return h_local
+        data.x = h_local
+
+        return data
