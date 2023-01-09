@@ -10,7 +10,7 @@ from torch_geometric.graphgym.cmd_args import parse_args
 from torch_geometric.graphgym.config import (cfg, dump_cfg,
                                              set_agg_dir, set_cfg, load_cfg,
                                              makedirs_rm_exist)
-from torch_geometric.graphgym.loader import create_loader
+from create_loader_zinc import create_loader
 from torch_geometric.graphgym.logger import set_printing
 from torch_geometric.graphgym.optim import create_optimizer, \
     create_scheduler, OptimizerConfig
@@ -127,7 +127,7 @@ if __name__ == '__main__':
         cfg.dataset.split_index = split_index
         cfg.seed = seed
         cfg.run_id = run_id
-        seed_everything(cfg.seed)
+        seed_everything(0)
         auto_select_device()
         if cfg.pretrained.dir:
             cfg = load_pretrained_model_cfg(cfg)
